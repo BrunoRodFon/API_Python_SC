@@ -1,39 +1,33 @@
-from flask import Flask, request, send_file
+from flask import Flask, request, jsonify
 import pandas as pd
-import io
+import base64
+from io import StringIO
 
 app = Flask(__name__)
 
-@app.route("/")
-def home():
-    return "API de Conversão de CSV para Excel com Tabela está ativa!"
-
-@app.route("/conversor", methods=["POST"])
-def converter_csv_para_excel():
-    if 'file' not in request.files:
-        return "Arquivo CSV não encontrado na requisição", 400
-
-    file = request.files['file']
-
+@app.route('/upload', methods=['POST'])
+def upload_csv():
     try:
-        # Lê o CSV em um DataFrame
-        df = pd.read_csv(file)
+        data = request.get_json()
+        if not data or 'file_base64' not in data:
+            return jsonify({"error": "Parâmetro 'file_base64' não encontrado"}), 400
 
-        # Cria um arquivo Excel em memória
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df.to_excel(writer, sheet_name='Planilha1', index=False)
+        # Decodifica o conteúdo base64
+        file_data = base64.b64decode(data['file_base64'])
+        csv_string = file_data.decode('utf-8')
 
-            # Formatar como tabela (opcional, pode ser detalhado depois)
+        # Converte CSV em DataFrame
+        df = pd.read_csv(StringIO(csv_string))
 
-        output.seek(0)
-
-        return send_file(
-            output,
-            download_name="arquivo_convertido.xlsx",
-            as_attachment=True,
-            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        )
+        # Exemplo: retornar o número de linhas e colunas
+        return jsonify({
+            "rows": len(df),
+            "columns": list(df.columns),
+            "preview": df.head(3).to_dict(orient="records")
+        })
 
     except Exception as e:
-        return f"Erro ao processar o arquivo: {str(e)}", 500
+        return jsonify({"error": str(e)}), 500
+
+if __name__ == '__main__':
+    app.run()
