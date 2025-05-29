@@ -1,42 +1,36 @@
-from flask import Flask, request, jsonify
-import pandas as pd
 import base64
-from io import StringIO
-import os
+import io
+import pandas as pd
+import tempfile
+import zipfile
+from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
 @app.route('/upload', methods=['POST'])
 def upload_csv():
-    try:
-        data = request.get_json()
-        if not data or 'file_base64' not in data:
-            return jsonify({"error": "Parâmetro 'file_base64' não encontrado"}), 400
+    data = request.get_json()
+    file_content = base64.b64decode(data['arquivo'])
 
-        # Decodifica CSV
-        file_data = base64.b64decode(data['file_base64'])
-        csv_string = file_data.decode('utf-8')
+    # Usa um arquivo temporário para armazenar o zip
+    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp_zip:
+        zip_path = tmp_zip.name
 
-        # Lê CSV em partes (melhora performance)
-        chunks = pd.read_csv(StringIO(csv_string), chunksize=5000)
+    # Lê o conteúdo em chunks e escreve CSV temporário
+    with tempfile.NamedTemporaryFile(mode='w+', suffix=".csv", delete=False, newline='', encoding='utf-8') as tmp_csv:
+        csv_path = tmp_csv.name
 
-        # Gera Excel no disco
-        output_path = '/tmp/arquivo.xlsx'
-        with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-            for i, chunk in enumerate(chunks):
-                chunk.to_excel(writer, index=False, sheet_name=f"Parte{i+1}")
+        # Escreve o cabeçalho e dados em partes
+        reader = pd.read_csv(io.BytesIO(file_content), chunksize=5000)
+        for i, chunk in enumerate(reader):
+            chunk.to_csv(tmp_csv, index=False, header=(i == 0))
 
-        # Lê o Excel gerado e converte para base64
-        with open(output_path, 'rb') as f:
-            excel_base64 = base64.b64encode(f.read()).decode('utf-8')
+    # Compacta o CSV em ZIP
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        zipf.write(csv_path, arcname='resultado.csv')
 
-        return jsonify({
-            "filename": "arquivo.xlsx",
-            "file_base64": excel_base64
-        })
+    # Retorna o ZIP em base64
+    with open(zip_path, 'rb') as f:
+        zip_base64 = base64.b64encode(f.read()).decode()
 
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-if __name__ == '__main__':
-    app.run()
+    return jsonify({'arquivo_zip_base64': zip_base64})
