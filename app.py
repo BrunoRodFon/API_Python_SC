@@ -1,44 +1,50 @@
-from flask import Flask, request, jsonify
 import base64
 import io
+import os
 import pandas as pd
+from flask import Flask, request, jsonify, send_file
+from zipfile import ZipFile
 
 app = Flask(__name__)
 
 @app.route('/upload', methods=['POST'])
 def upload_csv():
-    try:
-        data = request.get_json(force=True)
-        csv_b64 = data.get('csv_base64')
-        if not csv_b64:
-            return jsonify({"error": "Nenhum CSV enviado"}), 400
-        
-        # Decodifica base64 para bytes
-        csv_bytes = base64.b64decode(csv_b64)
-        csv_buffer = io.BytesIO(csv_bytes)
-        
-        # Configura o buffer para Excel de saída
-        excel_buffer = io.BytesIO()
-        
-        # Inicializa o ExcelWriter com engine xlsxwriter
-        with pd.ExcelWriter(excel_buffer, engine='xlsxwriter') as writer:
-            first_chunk = True
-            
-            # Lê CSV em chunks de 5000 linhas (ajuste se quiser)
-            for chunk in pd.read_csv(csv_buffer, chunksize=5000):
-                # Escreve o chunk no Excel, na mesma sheet, posicionando abaixo do anterior
-                startrow = 0 if first_chunk else writer.sheets['Sheet1'].max_row
-                chunk.to_excel(writer, sheet_name='Sheet1', index=False, header=first_chunk, startrow=startrow)
-                first_chunk = False
-        
-        # Fecha o writer e pega o conteúdo do Excel em bytes
-        excel_buffer.seek(0)
-        excel_b64 = base64.b64encode(excel_buffer.read()).decode('utf-8')
-        
-        return jsonify({"excel_base64": excel_b64})
-    
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    data = request.get_json()
+    if not data or 'csv_base64' not in data:
+        return jsonify({'error': 'Nenhum CSV enviado'}), 400
 
-if __name__ == '__main__':
-    app.run(debug=True)
+    try:
+        # Decodificar CSV
+        csv_bytes = base64.b64decode(data['csv_base64'])
+        csv_file = io.BytesIO(csv_bytes)
+
+        # Caminho temporário
+        output_excel = 'output.xlsx'
+        writer = pd.ExcelWriter(output_excel, engine='openpyxl')
+
+        # Ler e salvar por partes
+        chunk_size = 1000
+        chunk_iter = pd.read_csv(csv_file, chunksize=chunk_size)
+
+        for i, chunk in enumerate(chunk_iter):
+            sheet_name = f'Lote{i + 1}'
+            chunk.to_excel(writer, sheet_name=sheet_name, index=False)
+
+        writer.close()
+
+        # Compactar para envio
+        zip_buffer = io.BytesIO()
+        with ZipFile(zip_buffer, 'w') as zip_file:
+            zip_file.write(output_excel, arcname='output.xlsx')
+
+        zip_buffer.seek(0)
+        os.remove(output_excel)
+
+        return send_file(
+            zip_buffer,
+            mimetype='application/zip',
+            as_attachment=True,
+            download_name='arquivo_excel.zip'
+        )
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
