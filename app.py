@@ -3,7 +3,7 @@ import io
 import os
 import pandas as pd
 from flask import Flask, request, jsonify, send_file
-from zipfile import ZipFile
+from tempfile import NamedTemporaryFile
 
 app = Flask(__name__)
 
@@ -18,33 +18,29 @@ def upload_csv():
         csv_bytes = base64.b64decode(data['csv_base64'])
         csv_file = io.BytesIO(csv_bytes)
 
-        # Caminho temporário
-        output_excel = 'output.xlsx'
-        writer = pd.ExcelWriter(output_excel, engine='openpyxl')
+        # Criar arquivo Excel temporário
+        with NamedTemporaryFile(suffix='.xlsx', delete=False) as tmp_excel:
+            output_excel_path = tmp_excel.name
 
-        # Ler e salvar por partes
-        chunk_size = 1000
-        chunk_iter = pd.read_csv(csv_file, chunksize=chunk_size)
+        # Criar primeira parte do Excel
+        first_chunk = True
+        for chunk in pd.read_csv(csv_file, chunksize=1000):
+            with pd.ExcelWriter(output_excel_path, engine='openpyxl', mode='a' if not first_chunk else 'w') as writer:
+                chunk.to_excel(writer, sheet_name='Dados', index=False, header=first_chunk, startrow=writer.sheets['Dados'].max_row if not first_chunk else 0)
+            first_chunk = False
 
-        for i, chunk in enumerate(chunk_iter):
-            sheet_name = f'Lote{i + 1}'
-            chunk.to_excel(writer, sheet_name=sheet_name, index=False)
+        # Enviar como resposta
+        with open(output_excel_path, 'rb') as f:
+            excel_data = f.read()
 
-        writer.close()
-
-        # Compactar para envio
-        zip_buffer = io.BytesIO()
-        with ZipFile(zip_buffer, 'w') as zip_file:
-            zip_file.write(output_excel, arcname='output.xlsx')
-
-        zip_buffer.seek(0)
-        os.remove(output_excel)
+        os.remove(output_excel_path)
 
         return send_file(
-            zip_buffer,
-            mimetype='application/zip',
+            io.BytesIO(excel_data),
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             as_attachment=True,
-            download_name='arquivo_excel.zip'
+            download_name='arquivo.xlsx'
         )
+
     except Exception as e:
         return jsonify({'error': str(e)}), 500
