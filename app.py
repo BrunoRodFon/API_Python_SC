@@ -1,63 +1,44 @@
-from flask import Flask, request, send_file, jsonify
-import pandas as pd
-import io
+from flask import Flask, request, jsonify
 import base64
-import zipfile
-import os
-import uuid
+import io
+import pandas as pd
 
 app = Flask(__name__)
 
 @app.route('/upload', methods=['POST'])
 def upload_csv():
     try:
-        data = request.get_json()
-        if not data or 'file' not in data:
-            return jsonify({'error': 'Nenhum arquivo enviado'}), 400
-
-        # Decode base64
-        csv_data = base64.b64decode(data['file'])
-        csv_buffer = io.BytesIO(csv_data)
-
-        # Read CSV into pandas DataFrame
-        df = pd.read_csv(csv_buffer)
-
-        # Criar Excel com estilo de TABELA
-        output_excel = io.BytesIO()
-        with pd.ExcelWriter(output_excel, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False, sheet_name='Dados')
-            workbook = writer.book
-            worksheet = writer.sheets['Dados']
-            max_row = df.shape[0] + 1
-            max_col = df.shape[1]
-            col_letter = chr(64 + max_col) if max_col <= 26 else 'Z'
-            table_range = f"A1:{col_letter}{max_row}"
-
-            from openpyxl.worksheet.table import Table, TableStyleInfo
-            tab = Table(displayName="Tabela1", ref=table_range)
-            style = TableStyleInfo(name="TableStyleMedium9", showFirstColumn=False,
-                                   showLastColumn=False, showRowStripes=True, showColumnStripes=False)
-            tab.tableStyleInfo = style
-            worksheet.add_table(tab)
-
-        # Voltar para o início do buffer
-        output_excel.seek(0)
-
-        # Criar um ZIP com o Excel dentro
-        zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-            zip_file.writestr('arquivo_convertido.xlsx', output_excel.read())
-        zip_buffer.seek(0)
-
-        return send_file(
-            zip_buffer,
-            mimetype='application/zip',
-            as_attachment=True,
-            download_name='convertido.zip'
-        )
-
+        data = request.get_json(force=True)
+        csv_b64 = data.get('csv_base64')
+        if not csv_b64:
+            return jsonify({"error": "Nenhum CSV enviado"}), 400
+        
+        # Decodifica base64 para bytes
+        csv_bytes = base64.b64decode(csv_b64)
+        csv_buffer = io.BytesIO(csv_bytes)
+        
+        # Configura o buffer para Excel de saída
+        excel_buffer = io.BytesIO()
+        
+        # Inicializa o ExcelWriter com engine xlsxwriter
+        with pd.ExcelWriter(excel_buffer, engine='xlsxwriter') as writer:
+            first_chunk = True
+            
+            # Lê CSV em chunks de 5000 linhas (ajuste se quiser)
+            for chunk in pd.read_csv(csv_buffer, chunksize=5000):
+                # Escreve o chunk no Excel, na mesma sheet, posicionando abaixo do anterior
+                startrow = 0 if first_chunk else writer.sheets['Sheet1'].max_row
+                chunk.to_excel(writer, sheet_name='Sheet1', index=False, header=first_chunk, startrow=startrow)
+                first_chunk = False
+        
+        # Fecha o writer e pega o conteúdo do Excel em bytes
+        excel_buffer.seek(0)
+        excel_b64 = base64.b64encode(excel_buffer.read()).decode('utf-8')
+        
+        return jsonify({"excel_base64": excel_b64})
+    
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
     app.run(debug=True)
