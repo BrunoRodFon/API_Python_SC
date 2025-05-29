@@ -1,46 +1,64 @@
-import base64
-import io
+# app.py
 import os
+import base64
+import uuid
 import pandas as pd
 from flask import Flask, request, jsonify, send_file
-from tempfile import NamedTemporaryFile
+from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 
-@app.route('/upload', methods=['POST'])
-def upload_csv():
+# Pastas para salvar arquivos temporários
+UPLOAD_FOLDER = "temp_uploads"
+RESULT_FOLDER = "temp_results"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(RESULT_FOLDER, exist_ok=True)
+
+@app.route("/start-job", methods=["POST"])
+def start_job():
     data = request.get_json()
-    if not data or 'csv_base64' not in data:
-        return jsonify({'error': 'Nenhum CSV enviado'}), 400
+
+    if not data or "csv_base64" not in data:
+        return jsonify({"error": "Campo 'csv_base64' ausente"}), 400
 
     try:
-        # Decodificar CSV
-        csv_bytes = base64.b64decode(data['csv_base64'])
-        csv_file = io.BytesIO(csv_bytes)
+        job_id = str(uuid.uuid4())
+        filename = f"{secure_filename(job_id)}.csv"
+        filepath = os.path.join(UPLOAD_FOLDER, filename)
 
-        # Criar arquivo Excel temporário
-        with NamedTemporaryFile(suffix='.xlsx', delete=False) as tmp_excel:
-            output_excel_path = tmp_excel.name
+        # Decodifica e salva o CSV
+        csv_data = base64.b64decode(data["csv_base64"])
+        with open(filepath, "wb") as f:
+            f.write(csv_data)
 
-        # Criar primeira parte do Excel
-        first_chunk = True
-        for chunk in pd.read_csv(csv_file, chunksize=1000):
-            with pd.ExcelWriter(output_excel_path, engine='openpyxl', mode='a' if not first_chunk else 'w') as writer:
-                chunk.to_excel(writer, sheet_name='Dados', index=False, header=first_chunk, startrow=writer.sheets['Dados'].max_row if not first_chunk else 0)
-            first_chunk = False
+        # Inicia o processamento assíncrono
+        process_csv_in_background(job_id, filepath)
 
-        # Enviar como resposta
-        with open(output_excel_path, 'rb') as f:
-            excel_data = f.read()
-
-        os.remove(output_excel_path)
-
-        return send_file(
-            io.BytesIO(excel_data),
-            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            as_attachment=True,
-            download_name='arquivo.xlsx'
-        )
+        return jsonify({"job_id": job_id}), 202
 
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/get-job-result", methods=["GET"])
+def get_job_result():
+    job_id = request.args.get("job_id")
+    if not job_id:
+        return jsonify({"error": "Parâmetro 'job_id' ausente"}), 400
+
+    xlsx_path = os.path.join(RESULT_FOLDER, f"{secure_filename(job_id)}.xlsx")
+    if os.path.exists(xlsx_path):
+        return send_file(xlsx_path, as_attachment=True, download_name=f"{job_id}.xlsx")
+
+    return jsonify({"status": "processing"}), 202
+
+def process_csv_in_background(job_id, filepath):
+    # Executa em background — simulado por agora como execução síncrona
+    try:
+        df = pd.read_csv(filepath)
+        xlsx_path = os.path.join(RESULT_FOLDER, f"{secure_filename(job_id)}.xlsx")
+        df.to_excel(xlsx_path, index=False, engine='openpyxl')
+    except Exception as e:
+        print(f"[ERRO] Falha no job {job_id}: {e}")
+
+if __name__ == "__main__":
+    app.run(debug=True, host="0.0.0.0")
