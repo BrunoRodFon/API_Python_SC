@@ -1,36 +1,63 @@
-import base64
-import io
+from flask import Flask, request, send_file, jsonify
 import pandas as pd
-import tempfile
+import io
+import base64
 import zipfile
-from flask import Flask, request, jsonify
+import os
+import uuid
 
 app = Flask(__name__)
 
 @app.route('/upload', methods=['POST'])
 def upload_csv():
-    data = request.get_json()
-    file_content = base64.b64decode(data['arquivo'])
+    try:
+        data = request.get_json()
+        if not data or 'file' not in data:
+            return jsonify({'error': 'Nenhum arquivo enviado'}), 400
 
-    # Usa um arquivo temporário para armazenar o zip
-    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp_zip:
-        zip_path = tmp_zip.name
+        # Decode base64
+        csv_data = base64.b64decode(data['file'])
+        csv_buffer = io.BytesIO(csv_data)
 
-    # Lê o conteúdo em chunks e escreve CSV temporário
-    with tempfile.NamedTemporaryFile(mode='w+', suffix=".csv", delete=False, newline='', encoding='utf-8') as tmp_csv:
-        csv_path = tmp_csv.name
+        # Read CSV into pandas DataFrame
+        df = pd.read_csv(csv_buffer)
 
-        # Escreve o cabeçalho e dados em partes
-        reader = pd.read_csv(io.BytesIO(file_content), chunksize=5000)
-        for i, chunk in enumerate(reader):
-            chunk.to_csv(tmp_csv, index=False, header=(i == 0))
+        # Criar Excel com estilo de TABELA
+        output_excel = io.BytesIO()
+        with pd.ExcelWriter(output_excel, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='Dados')
+            workbook = writer.book
+            worksheet = writer.sheets['Dados']
+            max_row = df.shape[0] + 1
+            max_col = df.shape[1]
+            col_letter = chr(64 + max_col) if max_col <= 26 else 'Z'
+            table_range = f"A1:{col_letter}{max_row}"
 
-    # Compacta o CSV em ZIP
-    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-        zipf.write(csv_path, arcname='resultado.csv')
+            from openpyxl.worksheet.table import Table, TableStyleInfo
+            tab = Table(displayName="Tabela1", ref=table_range)
+            style = TableStyleInfo(name="TableStyleMedium9", showFirstColumn=False,
+                                   showLastColumn=False, showRowStripes=True, showColumnStripes=False)
+            tab.tableStyleInfo = style
+            worksheet.add_table(tab)
 
-    # Retorna o ZIP em base64
-    with open(zip_path, 'rb') as f:
-        zip_base64 = base64.b64encode(f.read()).decode()
+        # Voltar para o início do buffer
+        output_excel.seek(0)
 
-    return jsonify({'arquivo_zip_base64': zip_base64})
+        # Criar um ZIP com o Excel dentro
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            zip_file.writestr('arquivo_convertido.xlsx', output_excel.read())
+        zip_buffer.seek(0)
+
+        return send_file(
+            zip_buffer,
+            mimetype='application/zip',
+            as_attachment=True,
+            download_name='convertido.zip'
+        )
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+if __name__ == '__main__':
+    app.run(debug=True)
