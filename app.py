@@ -1,43 +1,39 @@
 from flask import Flask, request, send_file
 import pandas as pd
-from openpyxl import load_workbook
-from openpyxl.worksheet.table import Table, TableStyleInfo
-from io import BytesIO
+import io
 
 app = Flask(__name__)
 
-@app.route("/converter", methods=["POST"])
-def converter_csv():
-    if "file" not in request.files:
-        return "Arquivo CSV não enviado", 400
+@app.route("/")
+def home():
+    return "API de Conversão de CSV para Excel com Tabela está ativa!"
 
-    file = request.files["file"]
-    df = pd.read_csv(file)
+@app.route("/conversor", methods=["POST"])
+def converter_csv_para_excel():
+    if 'file' not in request.files:
+        return "Arquivo CSV não encontrado na requisição", 400
 
-    # Cria o arquivo Excel na memória
-    output = BytesIO()
-    df.to_excel(output, index=False, sheet_name="Inventario")
-    output.seek(0)
+    file = request.files['file']
 
-    wb = load_workbook(output)
-    ws = wb["Inventario"]
+    try:
+        # Lê o CSV em um DataFrame
+        df = pd.read_csv(file)
 
-    ref = f"A1:{chr(65 + len(df.columns) - 1)}{len(df) + 1}"
-    tabela = Table(displayName="TabelaInventario", ref=ref)
-    estilo = TableStyleInfo(name="TableStyleMedium9", showRowStripes=True)
-    tabela.tableStyleInfo = estilo
-    ws.add_table(tabela)
+        # Cria um arquivo Excel em memória
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, sheet_name='Planilha1', index=False)
 
-    final_output = BytesIO()
-    wb.save(final_output)
-    final_output.seek(0)
+            # Formatar como tabela (opcional, pode ser detalhado depois)
 
-    return send_file(
-        final_output,
-        download_name="Inventario_Com_Tabela.xlsx",
-        as_attachment=True,
-        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+        output.seek(0)
 
-if __name__ == "__main__":
-    app.run(debug=True)
+        return send_file(
+            output,
+            download_name="arquivo_convertido.xlsx",
+            as_attachment=True,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        )
+
+    except Exception as e:
+        return f"Erro ao processar o arquivo: {str(e)}", 500
